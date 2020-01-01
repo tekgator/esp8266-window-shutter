@@ -6,9 +6,8 @@
 #include <PubSubClient.h>
 #include <ArduinoLog.h>
 
-const char* CLIENT_ID_PART1 = "esp8266";
-
 String m_clientId;
+
 WiFiEventHandler m_wifiConnectHandler;
 WiFiEventHandler m_wifiDisconnectHandler;
 WiFiEventHandler m_wifiGotIpHandler;
@@ -39,15 +38,23 @@ enum CoverCommand {
 #define COVER_PINSTOP_LEFT D6
 #define COVER_PINDOWN_LEFT D7
 #define COVER_DURATION_LEFT 20
+
 uint m_coverPositionLeft = 100;
-unsigned long m_triggerStopPinLeft = 0; 
+unsigned long m_triggerUpPinLeft = 0;
+unsigned long m_triggerStopPinLeft = 0;
+unsigned long m_triggerDownPinLeft = 0;
 
 #define COVER_PINUP_RIGHT D1
 #define COVER_PINSTOP_RIGHT D2
 #define COVER_PINDOWN_RIGHT D3
 #define COVER_DURATION_RIGHT 19
+
 uint m_coverPositionRight = 100;
+unsigned long m_triggerUpPinRight = 0;
 unsigned long m_triggerStopPinRight = 0;
+unsigned long m_triggerDownPinRight = 0;
+
+unsigned long m_lastButtonPress = 0;
 
 bool m_triggerAnnounce = false;
 
@@ -60,7 +67,6 @@ void printTimestamp(Print* _logOutput) {
 void printNewline(Print* _logOutput) {
   _logOutput->print('\n');
 }
-
 
 int roundUp(int numToRound, int multiple) {
     if (multiple == 0)
@@ -97,15 +103,53 @@ uint getPin(WorkMode workMode, CoverCommand coverCommand) {
     return pin;
 }
 
-void checkStopPressRequired() {
+void checkButtonPressRequired() {
+
+    if (m_triggerUpPinLeft > 0 && millis() >= m_triggerUpPinLeft) {
+        Log.notice("Press up button on pin [ %d ] for cover [ %d / left ]", getPin(WorkMode::COVER_LEFT, CoverCommand::UP), WorkMode::COVER_LEFT);
+        
+        digitalWrite(getPin(WorkMode::COVER_LEFT, CoverCommand::UP), HIGH);
+        delay(100);
+        digitalWrite(getPin(WorkMode::COVER_LEFT, CoverCommand::UP), LOW);
+        m_lastButtonPress = millis();
+
+        m_triggerUpPinLeft = 0;
+        m_triggerAnnounce = true;
+    }
+
     if (m_triggerStopPinLeft > 0 && millis() >= m_triggerStopPinLeft) {
         Log.notice("Press stop button on pin [ %d ] for cover [ %d / left ]", getPin(WorkMode::COVER_LEFT, CoverCommand::STOP), WorkMode::COVER_LEFT);
         
         digitalWrite(getPin(WorkMode::COVER_LEFT, CoverCommand::STOP), HIGH);
         delay(100);
         digitalWrite(getPin(WorkMode::COVER_LEFT, CoverCommand::STOP), LOW);
+        m_lastButtonPress = millis();
 
         m_triggerStopPinLeft = 0;
+        m_triggerAnnounce = true;
+    }
+
+    if (m_triggerDownPinLeft > 0 && millis() >= m_triggerDownPinLeft) {
+        Log.notice("Press down button on pin [ %d ] for cover [ %d / left ]", getPin(WorkMode::COVER_LEFT, CoverCommand::DOWN), WorkMode::COVER_LEFT);
+        
+        digitalWrite(getPin(WorkMode::COVER_LEFT, CoverCommand::DOWN), HIGH);
+        delay(100);
+        digitalWrite(getPin(WorkMode::COVER_LEFT, CoverCommand::DOWN), LOW);
+        m_lastButtonPress = millis();
+
+        m_triggerDownPinLeft = 0;
+        m_triggerAnnounce = true;
+    }
+
+    if (m_triggerUpPinRight > 0 && millis() >= m_triggerUpPinRight) {
+        Log.notice("Press up button on pin [ %d ] for cover [ %d / right ]", getPin(WorkMode::COVER_RIGHT, CoverCommand::UP), WorkMode::COVER_RIGHT);
+        
+        digitalWrite(getPin(WorkMode::COVER_RIGHT, CoverCommand::UP), HIGH);
+        delay(100);
+        digitalWrite(getPin(WorkMode::COVER_RIGHT, CoverCommand::UP), LOW);
+        m_lastButtonPress = millis();
+
+        m_triggerUpPinRight = 0;
         m_triggerAnnounce = true;
     }
 
@@ -115,8 +159,21 @@ void checkStopPressRequired() {
         digitalWrite(getPin(WorkMode::COVER_RIGHT, CoverCommand::STOP), HIGH);
         delay(100);
         digitalWrite(getPin(WorkMode::COVER_RIGHT, CoverCommand::STOP), LOW);
+        m_lastButtonPress = millis();
 
         m_triggerStopPinRight = 0;
+        m_triggerAnnounce = true;
+    }
+
+    if (m_triggerDownPinRight > 0 && millis() >= m_triggerDownPinRight) {
+        Log.notice("Press down button on pin [ %d ] for cover [ %d / right ]", getPin(WorkMode::COVER_RIGHT, CoverCommand::DOWN), WorkMode::COVER_RIGHT);
+        
+        digitalWrite(getPin(WorkMode::COVER_RIGHT, CoverCommand::DOWN), HIGH);
+        delay(100);
+        digitalWrite(getPin(WorkMode::COVER_RIGHT, CoverCommand::DOWN), LOW);
+        m_lastButtonPress = millis();
+
+        m_triggerDownPinRight = 0;
         m_triggerAnnounce = true;
     }
 }
@@ -132,10 +189,10 @@ void startBlinkOnboardLed(bool critical = false) {
     }
 }
 
-void stopBlinkOnboardLed(bool leaveOn = true) {
+void stopBlinkOnboardLed() {
     if (m_onboardLedBlinker.active()) {
         m_onboardLedBlinker.detach();
-        digitalWrite(LED_BUILTIN, leaveOn ? LOW : HIGH);
+        digitalWrite(LED_BUILTIN, LED_ONBOARD_ACTIVE ? LOW : HIGH);
     }
 }
 
@@ -144,52 +201,41 @@ void stopBlinkOnboardLed(bool leaveOn = true) {
 
 bool moveCoverByStatus(WorkMode workMode, CoverCommand coverCommand) {
 
-    String strCoverCmd = "";
-    String strCover = "";
-
     if (workMode == WorkMode::COVER_LEFT) {
-        strCover = "left";
+        m_triggerAnnounce = true;
 
-        if (m_triggerStopPinLeft > 0) {
-            Log.warning("Cover [ %d / %s ] currently busy with other task, cannot proceed", workMode, strCover.c_str());
-            return false;  
+        if (m_triggerUpPinLeft > 0 || m_triggerStopPinLeft > 0 || m_triggerDownPinLeft > 0) {
+            Log.warning("Cover [ %d / left ] currently busy with other task, cannot proceed", workMode);
+            return false;
         }
 
         if (coverCommand == CoverCommand::DOWN) {
-            strCoverCmd = "down";
             m_coverPositionLeft = 0;
+            m_triggerDownPinLeft = 1;
         } else if (coverCommand == CoverCommand::STOP) {
-            strCoverCmd = "stop";
+            m_triggerStopPinLeft = 1;
         } else if (coverCommand == CoverCommand::UP) {
-            strCoverCmd = "up";
             m_coverPositionLeft = 100;
+            m_triggerUpPinLeft = 1;
         }
     } else {
-        strCover = "right";
+        m_triggerAnnounce = true;
 
-        if (m_triggerStopPinRight > 0) {
-            Log.warning("Cover [ %d / %s ] currently busy with other task, cannot proceed", workMode, strCover.c_str());
+        if (m_triggerUpPinRight > 0 || m_triggerStopPinRight > 0 || m_triggerDownPinRight > 0) {
+            Log.warning("Cover [ %d / right ] currently busy with other task, cannot proceed", workMode);
             return false;  
         }
 
         if (coverCommand == CoverCommand::DOWN) {
-            strCoverCmd = "down";
             m_coverPositionRight = 0;
+            m_triggerDownPinRight = 1;
         } else if (coverCommand == CoverCommand::STOP) {
-            strCoverCmd = "stop";
+            m_triggerStopPinRight = 1;
         } else if (coverCommand == CoverCommand::UP) {
-            strCoverCmd = "up";
             m_coverPositionRight = 100;
+            m_triggerUpPinRight = 1;
         }
     }
-
-    Log.notice("Press button [ %d / %s ] / pin [ %d ] for cover [ %d / %s ]", coverCommand, strCoverCmd.c_str(), getPin(workMode, coverCommand), workMode, strCover.c_str());
-
-    digitalWrite(getPin(workMode, coverCommand), HIGH);
-    delay(100);
-    digitalWrite(getPin(workMode, coverCommand), LOW);
-
-    m_triggerAnnounce = true;
 
     return true;
 }
@@ -207,12 +253,14 @@ bool moveCoverByPosition(WorkMode workMode, uint position) {
     float timeToMoveComplete = 0;
     float timeToMove = 0;
 
+    m_triggerAnnounce = true;
+
     if (workMode == WorkMode::COVER_LEFT) {
         strCover = "left";
-        
-        if (m_triggerStopPinLeft > 0) {
+       
+        if (m_triggerUpPinLeft > 0 || m_triggerStopPinLeft > 0 || m_triggerDownPinLeft > 0) {
             Log.warning("Cover [ %d / %s ] currently busy with other task, cannot proceed", workMode, strCover.c_str());
-            return false;  
+            return false;
         }
 
         curPositionPercent = m_coverPositionLeft;
@@ -220,7 +268,7 @@ bool moveCoverByPosition(WorkMode workMode, uint position) {
     } else {
         strCover = "right";
 
-        if (m_triggerStopPinRight > 0) {
+        if (m_triggerUpPinRight > 0 || m_triggerStopPinRight > 0 || m_triggerDownPinRight > 0) {
             Log.warning("Cover [ %d / %s ] currently busy with other task, cannot proceed", workMode, strCover.c_str());
             return false;  
         }
@@ -257,19 +305,20 @@ bool moveCoverByPosition(WorkMode workMode, uint position) {
 
     if (workMode == WorkMode::COVER_LEFT) {
         m_coverPositionLeft = newPositionPercent;
+        if (coverCommand == CoverCommand::UP) {
+            m_triggerUpPinLeft = 1;
+        } else if (coverCommand == CoverCommand::DOWN) {
+            m_triggerDownPinLeft = 1;
+        }
+        m_triggerStopPinLeft = millis() + (timeToMove * 1000) + 1;
     } else {
         m_coverPositionRight = newPositionPercent;
-    }
-
-    Log.notice("Press button [ %d / %s ] / pin [ %d ] for cover [ %d / %s ]", coverCommand, strCoverCmd.c_str(), getPin(workMode, coverCommand), workMode, strCover.c_str());
-
-    digitalWrite(getPin(workMode, coverCommand), HIGH);
-    delay(100);
-    digitalWrite(getPin(workMode, coverCommand), LOW);
-    if (workMode == WorkMode::COVER_LEFT) {
-        m_triggerStopPinLeft = millis() + (timeToMove * 1000);
-    } else {
-        m_triggerStopPinRight = millis() + (timeToMove * 1000);
+        if (coverCommand == CoverCommand::UP) {
+            m_triggerUpPinRight = 1;
+        } else if (coverCommand == CoverCommand::DOWN) {
+            m_triggerDownPinRight = 1;
+        }
+        m_triggerStopPinRight = millis() + (timeToMove * 1000) + 1;
     }
 
     return true;
@@ -282,7 +331,7 @@ String buildMqttTopic (String subTopic, WorkMode workMode) {
     String mqttTopic;
     
     if (workMode == WorkMode::GLOBAL) {
-        mqttTopic = String(CLIENT_ID_PART1) + "s/";
+        mqttTopic = String(CLIENT_ID_PREFIX) + "s/";
     } else {
         mqttTopic = m_clientId + "/";
     }
@@ -338,13 +387,23 @@ CoverCommand getCoverCommandFromPayload(String payload) {
 }
 
 void announceMqtt() {
-    publishMqttTopic(buildMqttTopic("availability", WorkMode::DEVICE), "online");
-    
-    publishMqttTopic(buildMqttTopic("state", WorkMode::COVER_LEFT), m_coverPositionLeft == 0 ? "closed" : "open");
-    publishMqttTopic(buildMqttTopic("position", WorkMode::COVER_LEFT), String(m_coverPositionLeft));
+    if (m_triggerAnnounce            && 
+        m_triggerDownPinLeft    == 0 &&
+        m_triggerStopPinLeft    == 0 &&
+        m_triggerUpPinLeft      == 0 &&
+         m_triggerDownPinRight  == 0 &&
+        m_triggerStopPinRight   == 0 &&
+        m_triggerUpPinRight     == 0) {
+        publishMqttTopic(buildMqttTopic("availability", WorkMode::DEVICE), "online");
+        
+        publishMqttTopic(buildMqttTopic("state", WorkMode::COVER_LEFT), m_coverPositionLeft == 0 ? "closed" : "open");
+        publishMqttTopic(buildMqttTopic("position", WorkMode::COVER_LEFT), String(m_coverPositionLeft));
 
-    publishMqttTopic(buildMqttTopic("state", WorkMode::COVER_RIGHT), m_coverPositionRight == 0 ? "closed" : "open");
-    publishMqttTopic(buildMqttTopic("position", WorkMode::COVER_RIGHT), String(m_coverPositionRight));    
+        publishMqttTopic(buildMqttTopic("state", WorkMode::COVER_RIGHT), m_coverPositionRight == 0 ? "closed" : "open");
+        publishMqttTopic(buildMqttTopic("position", WorkMode::COVER_RIGHT), String(m_coverPositionRight));
+    
+        m_triggerAnnounce = false;
+    }
 }
 
 int getPosition(String payload) {
@@ -506,7 +565,7 @@ void setupWifi() {
 
     String mac = WiFi.macAddress();
     mac.replace(":", "");
-    m_clientId = String(CLIENT_ID_PART1) + "-" + mac;
+    m_clientId = String(CLIENT_ID_PREFIX) + "-" + mac;
 
     WiFi.hostname(m_clientId);
 
@@ -541,12 +600,9 @@ void setup() {
 }
 
 void loop() {
-    checkStopPressRequired();
+    checkButtonPressRequired();
     
     if (checkMqttConnection()) {
-        if (m_triggerAnnounce) {
-            announceMqtt();
-            m_triggerAnnounce = false; 
-        }
+        announceMqtt();
     }
 }
