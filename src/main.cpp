@@ -1,184 +1,35 @@
-#include <config.h>
 #include <Arduino.h>
+#include <ArduinoLog.h>
 #include <ESP8266WiFi.h>
 #include <ESP8266mDNS.h>
 #include <Ticker.h>
 #include <PubSubClient.h>
-#include <ArduinoLog.h>
+#include "config.h"
+#include "Shutter.hpp"
 
-String m_clientId;
+Shutter m_shutter1("left");
+Shutter m_shutter2("right");
 
 WiFiEventHandler m_wifiConnectHandler;
 WiFiEventHandler m_wifiDisconnectHandler;
 WiFiEventHandler m_wifiGotIpHandler;
-WiFiClient m_espClient;
+String m_clientId;
+WiFiClient m_wifiClient;
 Ticker m_wifiReconnectTimer;
 
-PubSubClient m_mqttClient(m_espClient);
-unsigned long m_lastReconnectAttempt = 0;
+PubSubClient m_mqttClient(m_wifiClient);
+unsigned long m_mqttLastReconnectAttempt = 0;
+
+enum MqttMode {
+    INVALID_MQTT_MODE = -100,
+    GLOBAL = -1,
+    DEVICE = 0,
+    SHUTTER1 = 1,
+    SHUTTER2 = 2,
+};
 
 Ticker m_onboardLedBlinker;
 
-enum WorkMode {
-    INVALID_WORKMODE = -100,
-    GLOBAL = -1,
-    DEVICE = 0,
-    COVER_LEFT = 1,
-    COVER_RIGHT = 2,
-};
-
-enum CoverCommand {
-    INVALID_COVERCOMMAND = -100,
-    DOWN = 1,
-    STOP = 2,
-    UP = 3,
-};
-
-#define COVER_PINUP_LEFT D5
-#define COVER_PINSTOP_LEFT D6
-#define COVER_PINDOWN_LEFT D7
-#define COVER_DURATION_LEFT 20
-
-uint m_coverPositionLeft = 100;
-unsigned long m_triggerUpPinLeft = 0;
-unsigned long m_triggerStopPinLeft = 0;
-unsigned long m_triggerDownPinLeft = 0;
-
-#define COVER_PINUP_RIGHT D1
-#define COVER_PINSTOP_RIGHT D2
-#define COVER_PINDOWN_RIGHT D3
-#define COVER_DURATION_RIGHT 19
-
-uint m_coverPositionRight = 100;
-unsigned long m_triggerUpPinRight = 0;
-unsigned long m_triggerStopPinRight = 0;
-unsigned long m_triggerDownPinRight = 0;
-
-unsigned long m_lastButtonPress = 0;
-
-bool m_triggerAnnounce = false;
-
-void printTimestamp(Print* _logOutput) {
-    char c[12];
-    sprintf(c, "%10lu ", millis());
-    _logOutput->print(c);
-}
-
-void printNewline(Print* _logOutput) {
-  _logOutput->print('\n');
-}
-
-int roundUp(int numToRound, int multiple) {
-    if (multiple == 0)
-        return numToRound;
-
-    int remainder = numToRound % multiple;
-    if (remainder == 0)
-        return numToRound;
-
-    return numToRound + multiple - remainder;
-}
-
-uint getPin(WorkMode workMode, CoverCommand coverCommand) {
-    uint pin = 0;
-
-    if (workMode == WorkMode::COVER_LEFT) {
-        if (coverCommand == CoverCommand::DOWN) {
-            pin = COVER_PINDOWN_LEFT;
-        } else if (coverCommand == CoverCommand::STOP) {
-            pin = COVER_PINSTOP_LEFT;
-        } else if (coverCommand == CoverCommand::UP) {
-            pin = COVER_PINUP_LEFT;
-        }    
-    } else if (workMode == WorkMode::COVER_RIGHT) {
-        if (coverCommand == CoverCommand::DOWN) {
-            pin = COVER_PINDOWN_RIGHT;
-        } else if (coverCommand == CoverCommand::STOP) {
-            pin = COVER_PINSTOP_RIGHT;
-        } else if (coverCommand == CoverCommand::UP) {
-            pin = COVER_PINUP_RIGHT;
-        }
-    }
-
-    return pin;
-}
-
-void checkButtonPressRequired() {
-
-    if (m_triggerUpPinLeft > 0 && millis() >= m_triggerUpPinLeft) {
-        Log.notice("Press up button on pin [ %d ] for cover [ %d / left ]", getPin(WorkMode::COVER_LEFT, CoverCommand::UP), WorkMode::COVER_LEFT);
-        
-        digitalWrite(getPin(WorkMode::COVER_LEFT, CoverCommand::UP), HIGH);
-        delay(100);
-        digitalWrite(getPin(WorkMode::COVER_LEFT, CoverCommand::UP), LOW);
-        m_lastButtonPress = millis();
-
-        m_triggerUpPinLeft = 0;
-        m_triggerAnnounce = true;
-    }
-
-    if (m_triggerStopPinLeft > 0 && millis() >= m_triggerStopPinLeft) {
-        Log.notice("Press stop button on pin [ %d ] for cover [ %d / left ]", getPin(WorkMode::COVER_LEFT, CoverCommand::STOP), WorkMode::COVER_LEFT);
-        
-        digitalWrite(getPin(WorkMode::COVER_LEFT, CoverCommand::STOP), HIGH);
-        delay(100);
-        digitalWrite(getPin(WorkMode::COVER_LEFT, CoverCommand::STOP), LOW);
-        m_lastButtonPress = millis();
-
-        m_triggerStopPinLeft = 0;
-        m_triggerAnnounce = true;
-    }
-
-    if (m_triggerDownPinLeft > 0 && millis() >= m_triggerDownPinLeft) {
-        Log.notice("Press down button on pin [ %d ] for cover [ %d / left ]", getPin(WorkMode::COVER_LEFT, CoverCommand::DOWN), WorkMode::COVER_LEFT);
-        
-        digitalWrite(getPin(WorkMode::COVER_LEFT, CoverCommand::DOWN), HIGH);
-        delay(100);
-        digitalWrite(getPin(WorkMode::COVER_LEFT, CoverCommand::DOWN), LOW);
-        m_lastButtonPress = millis();
-
-        m_triggerDownPinLeft = 0;
-        m_triggerAnnounce = true;
-    }
-
-    if (m_triggerUpPinRight > 0 && millis() >= m_triggerUpPinRight) {
-        Log.notice("Press up button on pin [ %d ] for cover [ %d / right ]", getPin(WorkMode::COVER_RIGHT, CoverCommand::UP), WorkMode::COVER_RIGHT);
-        
-        digitalWrite(getPin(WorkMode::COVER_RIGHT, CoverCommand::UP), HIGH);
-        delay(100);
-        digitalWrite(getPin(WorkMode::COVER_RIGHT, CoverCommand::UP), LOW);
-        m_lastButtonPress = millis();
-
-        m_triggerUpPinRight = 0;
-        m_triggerAnnounce = true;
-    }
-
-    if (m_triggerStopPinRight > 0 && millis() >= m_triggerStopPinRight) {
-        Log.notice("Press stop button on pin [ %d ] for cover [ %d / right ]", getPin(WorkMode::COVER_RIGHT, CoverCommand::STOP), WorkMode::COVER_RIGHT);
-        
-        digitalWrite(getPin(WorkMode::COVER_RIGHT, CoverCommand::STOP), HIGH);
-        delay(100);
-        digitalWrite(getPin(WorkMode::COVER_RIGHT, CoverCommand::STOP), LOW);
-        m_lastButtonPress = millis();
-
-        m_triggerStopPinRight = 0;
-        m_triggerAnnounce = true;
-    }
-
-    if (m_triggerDownPinRight > 0 && millis() >= m_triggerDownPinRight) {
-        Log.notice("Press down button on pin [ %d ] for cover [ %d / right ]", getPin(WorkMode::COVER_RIGHT, CoverCommand::DOWN), WorkMode::COVER_RIGHT);
-        
-        digitalWrite(getPin(WorkMode::COVER_RIGHT, CoverCommand::DOWN), HIGH);
-        delay(100);
-        digitalWrite(getPin(WorkMode::COVER_RIGHT, CoverCommand::DOWN), LOW);
-        m_lastButtonPress = millis();
-
-        m_triggerDownPinRight = 0;
-        m_triggerAnnounce = true;
-    }
-}
-
-/*********  Blink onboard LED functions  **********/
 void blinkOnboardLed() {
     digitalWrite(LED_BUILTIN, !digitalRead(LED_BUILTIN));
 }
@@ -196,148 +47,27 @@ void stopBlinkOnboardLed() {
     }
 }
 
-
-/*********  COVER functions  **********/
-
-bool moveCoverByStatus(WorkMode workMode, CoverCommand coverCommand) {
-
-    if (workMode == WorkMode::COVER_LEFT) {
-        m_triggerAnnounce = true;
-
-        if (m_triggerUpPinLeft > 0 || m_triggerStopPinLeft > 0 || m_triggerDownPinLeft > 0) {
-            Log.warning("Cover [ %d / left ] currently busy with other task, cannot proceed", workMode);
-            return false;
-        }
-
-        if (coverCommand == CoverCommand::DOWN) {
-            m_coverPositionLeft = 0;
-            m_triggerDownPinLeft = 1;
-        } else if (coverCommand == CoverCommand::STOP) {
-            m_triggerStopPinLeft = 1;
-        } else if (coverCommand == CoverCommand::UP) {
-            m_coverPositionLeft = 100;
-            m_triggerUpPinLeft = 1;
-        }
-    } else {
-        m_triggerAnnounce = true;
-
-        if (m_triggerUpPinRight > 0 || m_triggerStopPinRight > 0 || m_triggerDownPinRight > 0) {
-            Log.warning("Cover [ %d / right ] currently busy with other task, cannot proceed", workMode);
-            return false;  
-        }
-
-        if (coverCommand == CoverCommand::DOWN) {
-            m_coverPositionRight = 0;
-            m_triggerDownPinRight = 1;
-        } else if (coverCommand == CoverCommand::STOP) {
-            m_triggerStopPinRight = 1;
-        } else if (coverCommand == CoverCommand::UP) {
-            m_coverPositionRight = 100;
-            m_triggerUpPinRight = 1;
-        }
-    }
-
-    return true;
+void printTimestamp(Print* _logOutput) {
+    char c[12];
+    sprintf(c, "%10lu ", millis());
+    _logOutput->print(c);
 }
 
-bool moveCoverByPosition(WorkMode workMode, uint position) {
-    String strCover = "";
-    String strCoverCmd = "";
-    
-    CoverCommand coverCommand = CoverCommand::INVALID_COVERCOMMAND;
-
-    int diffMovePercenct = 0;
-    uint curPositionPercent = 0;
-    uint newPositionPercent = 0;
-
-    float timeToMoveComplete = 0;
-    float timeToMove = 0;
-
-    m_triggerAnnounce = true;
-
-    if (workMode == WorkMode::COVER_LEFT) {
-        strCover = "left";
-       
-        if (m_triggerUpPinLeft > 0 || m_triggerStopPinLeft > 0 || m_triggerDownPinLeft > 0) {
-            Log.warning("Cover [ %d / %s ] currently busy with other task, cannot proceed", workMode, strCover.c_str());
-            return false;
-        }
-
-        curPositionPercent = m_coverPositionLeft;
-        timeToMoveComplete = COVER_DURATION_LEFT;
-    } else {
-        strCover = "right";
-
-        if (m_triggerUpPinRight > 0 || m_triggerStopPinRight > 0 || m_triggerDownPinRight > 0) {
-            Log.warning("Cover [ %d / %s ] currently busy with other task, cannot proceed", workMode, strCover.c_str());
-            return false;  
-        }
-
-        curPositionPercent = m_coverPositionRight; 
-        timeToMoveComplete = COVER_DURATION_RIGHT;
-    }
-
-    diffMovePercenct = curPositionPercent - position;
-
-    if (diffMovePercenct > 0) {
-        strCoverCmd = "down";
-        coverCommand = CoverCommand::DOWN;
-        newPositionPercent = curPositionPercent - roundUp(diffMovePercenct, 10);
-        diffMovePercenct = curPositionPercent - newPositionPercent;
-    } else if (diffMovePercenct < 0) {
-        strCoverCmd = "up";
-        coverCommand = CoverCommand::UP;
-        newPositionPercent = curPositionPercent + roundUp(abs(diffMovePercenct), 10);
-        diffMovePercenct = newPositionPercent - curPositionPercent;
-    } else {
-        // no difference detected, leave everything as is
-        return true;
-    }
-
-    if (newPositionPercent <= 0 || newPositionPercent >= 100) {
-        // full move without stop, use easy function
-        return moveCoverByStatus(workMode, coverCommand);
-    }
-
-    timeToMove = (diffMovePercenct * timeToMoveComplete) / 100;
-
-    Log.notice("Calculation for cover [ %d / %s ] done. Old pos [ %d ], new pos [ %d ], diff [ %d ], time to move [ %F ]", workMode, strCover.c_str(), curPositionPercent, newPositionPercent, diffMovePercenct, timeToMove);
-
-    if (workMode == WorkMode::COVER_LEFT) {
-        m_coverPositionLeft = newPositionPercent;
-        if (coverCommand == CoverCommand::UP) {
-            m_triggerUpPinLeft = 1;
-        } else if (coverCommand == CoverCommand::DOWN) {
-            m_triggerDownPinLeft = 1;
-        }
-        m_triggerStopPinLeft = millis() + (timeToMove * 1000) + 1;
-    } else {
-        m_coverPositionRight = newPositionPercent;
-        if (coverCommand == CoverCommand::UP) {
-            m_triggerUpPinRight = 1;
-        } else if (coverCommand == CoverCommand::DOWN) {
-            m_triggerDownPinRight = 1;
-        }
-        m_triggerStopPinRight = millis() + (timeToMove * 1000) + 1;
-    }
-
-    return true;
+void printNewline(Print* _logOutput) {
+    _logOutput->print('\n');
 }
 
-
-/*********  MQTT functions  **********/
-
-String buildMqttTopic (String subTopic, WorkMode workMode) {
+String buildMqttTopic (String subTopic, MqttMode mqttMode) {
     String mqttTopic;
     
-    if (workMode == WorkMode::GLOBAL) {
+    if (mqttMode == MqttMode::GLOBAL) {
         mqttTopic = String(CLIENT_ID_PREFIX) + "s/";
     } else {
         mqttTopic = m_clientId + "/";
     }
 
-    if (workMode > WorkMode::DEVICE) {
-        mqttTopic += "cover" + String(workMode) + "/";    
+    if (mqttMode > MqttMode::DEVICE) {
+        mqttTopic += "shutter" + String(mqttMode) + "/";    
     }
     mqttTopic += subTopic;
 
@@ -345,68 +75,43 @@ String buildMqttTopic (String subTopic, WorkMode workMode) {
 }
 
 void subscribeMqttTopic(String topic) {
-    Log.notice("Subcribe to MQTT topic [ %s ].", topic.c_str());
-    
+    Log.notice("[ %s:%d ] Subcribe to MQTT topic [ %s ].", __FILE__, __LINE__, topic.c_str());
     m_mqttClient.subscribe(topic.c_str());
 }
 
 void publishMqttTopic(String topic, String payload) {
-    Log.notice("Publish MQTT topic [ %s ] with payload [ %s ].", topic.c_str(), payload.c_str());
-
+    Log.notice("[ %s:%d ] Publish MQTT topic [ %s ] with payload [ %s ].", __FILE__, __LINE__, topic.c_str(), payload.c_str());
     m_mqttClient.publish(topic.c_str(), payload.c_str());
 }
 
-WorkMode getWorkModeFromTopic(String topic) {
-    WorkMode workMode = WorkMode::INVALID_WORKMODE;
-    
-    if (topic.startsWith(buildMqttTopic("", WorkMode::COVER_LEFT))) {
-        workMode = WorkMode::COVER_LEFT;
-    } else if (topic.startsWith(buildMqttTopic("", WorkMode::COVER_RIGHT))) {
-        workMode = WorkMode::COVER_RIGHT;
-    } else if (topic.startsWith(buildMqttTopic("", WorkMode::DEVICE))) {
-        workMode = WorkMode::DEVICE;
-    } else if (topic.startsWith(buildMqttTopic("", WorkMode::GLOBAL))) {
-        workMode = WorkMode::GLOBAL;
-    } 
-
-    return workMode;
+void sendStatusShutter1Mqtt() {
+    publishMqttTopic(buildMqttTopic("state", MqttMode::SHUTTER1), m_shutter1.getStatus());
+    publishMqttTopic(buildMqttTopic("position", MqttMode::SHUTTER1), String(m_shutter1.getPosition()));
 }
 
-CoverCommand getCoverCommandFromPayload(String payload) {
-    CoverCommand coverCommand = CoverCommand::INVALID_COVERCOMMAND;
-
-    if (payload.equalsIgnoreCase("down")) {
-        coverCommand = CoverCommand::DOWN;
-    } else if (payload.equalsIgnoreCase("stop")) {
-        coverCommand = CoverCommand::STOP;
-    } else if (payload.equalsIgnoreCase("up")) {
-        coverCommand = CoverCommand::UP;
-    }
-
-    return coverCommand;
+void sendStatusShutter2Mqtt() {
+    publishMqttTopic(buildMqttTopic("state", MqttMode::SHUTTER2), m_shutter2.getStatus());
+    publishMqttTopic(buildMqttTopic("position", MqttMode::SHUTTER2), String(m_shutter2.getPosition()));
 }
 
 void announceMqtt() {
-    if (m_triggerAnnounce            && 
-        m_triggerDownPinLeft    == 0 &&
-        m_triggerStopPinLeft    == 0 &&
-        m_triggerUpPinLeft      == 0 &&
-         m_triggerDownPinRight  == 0 &&
-        m_triggerStopPinRight   == 0 &&
-        m_triggerUpPinRight     == 0) {
-        publishMqttTopic(buildMqttTopic("availability", WorkMode::DEVICE), "online");
+    publishMqttTopic(buildMqttTopic("availability", MqttMode::DEVICE), "online");
         
-        publishMqttTopic(buildMqttTopic("state", WorkMode::COVER_LEFT), m_coverPositionLeft == 0 ? "closed" : "open");
-        publishMqttTopic(buildMqttTopic("position", WorkMode::COVER_LEFT), String(m_coverPositionLeft));
-
-        publishMqttTopic(buildMqttTopic("state", WorkMode::COVER_RIGHT), m_coverPositionRight == 0 ? "closed" : "open");
-        publishMqttTopic(buildMqttTopic("position", WorkMode::COVER_RIGHT), String(m_coverPositionRight));
-    
-        m_triggerAnnounce = false;
-    }
+    sendStatusShutter1Mqtt();
+    sendStatusShutter2Mqtt();
 }
 
-int getPosition(String payload) {
+String convertPayload(byte* payload, unsigned int length) {
+    String strPayload = "";
+
+    for (uint i = 0; i < length; i++) {
+        strPayload += (char)payload[i];
+    }
+
+    return strPayload;
+}
+
+int getPositionFromPayload(String payload) {
     int position = -1;
     bool isNum = true;
 
@@ -428,76 +133,104 @@ int getPosition(String payload) {
     return position;
 }
 
-void mqttCallback(char* topic, byte* payload, unsigned int length) {
-    String strTopic = topic;
-    String strPayLoad = "";
-    bool isValid = false;
+MqttMode getMqttModeFromTopic(String topic) {
+    MqttMode mqttMode = MqttMode::INVALID_MQTT_MODE;
     
-    WorkMode workMode = WorkMode::INVALID_WORKMODE;
-    CoverCommand coverCommand = CoverCommand::INVALID_COVERCOMMAND;
- 
-    for (uint i = 0; i < length; i++) {
-        strPayLoad += (char)payload[i];
+    if (topic.startsWith(buildMqttTopic("", MqttMode::SHUTTER1))) {
+        mqttMode = MqttMode::SHUTTER1;
+    } else if (topic.startsWith(buildMqttTopic("", MqttMode::SHUTTER2))) {
+        mqttMode = MqttMode::SHUTTER2;
+    } else if (topic.startsWith(buildMqttTopic("", MqttMode::DEVICE))) {
+        mqttMode = MqttMode::DEVICE;
+    } else if (topic.startsWith(buildMqttTopic("", MqttMode::GLOBAL))) {
+        mqttMode = MqttMode::GLOBAL;
+    } 
+
+    return mqttMode;
+}
+
+ShutterAction getShutterActionFromPayload(String payload) {
+    ShutterAction shutterAction = ShutterAction::UNDEFINED_ACTION;
+
+    if (payload.equalsIgnoreCase("down")) {
+        shutterAction = ShutterAction::DOWN;
+    } else if (payload.equalsIgnoreCase("stop")) {
+        shutterAction = ShutterAction::STOP;
+    } else if (payload.equalsIgnoreCase("up")) {
+        shutterAction = ShutterAction::UP;
     }
 
-    Log.notice("MQTT message arrived with topic [ %s ] and payload [ %s ].", strTopic.c_str(), strPayLoad.c_str());
-    
-    workMode = getWorkModeFromTopic(strTopic);
+    return shutterAction;
+}
 
-    if (workMode != WorkMode::INVALID_WORKMODE) {
-        if (workMode == WorkMode::COVER_LEFT ||
-            workMode == WorkMode::COVER_RIGHT) {
+void mqttCallback(char* topic, byte* payload, unsigned int length) {
+    String strTopic = topic;
+    String strPayLoad = convertPayload(payload, length);
+    MqttMode mqttMode = getMqttModeFromTopic(strTopic);
+    bool isValid = false;
+    int position = -1;
+    ShutterAction shutterAction = ShutterAction::UNDEFINED_ACTION;
+
+    Log.notice("[ %s:%d ] MQTT message arrived with topic [ %s ] and payload [ %s ].", __FILE__, __LINE__, strTopic.c_str(), strPayLoad.c_str());
+
+    if (mqttMode != MqttMode::INVALID_MQTT_MODE) {
+        if (mqttMode == MqttMode::SHUTTER1 ||
+            mqttMode == MqttMode::SHUTTER2) {
             if (strTopic.endsWith("set_position")) {
-                if (getPosition(strPayLoad) >= 0) {
+                position = getPositionFromPayload(strPayLoad);
+                if (position >= 0) {
+                    shutterAction = ShutterAction::MOVE_BY_POSITION;
                     isValid = true;
-                    moveCoverByPosition(workMode, getPosition(strPayLoad));
                 }
             } else if (strTopic.endsWith("set")) {
-                coverCommand = getCoverCommandFromPayload(strPayLoad);
-                if (coverCommand != CoverCommand::INVALID_COVERCOMMAND) {
+                shutterAction = getShutterActionFromPayload(strPayLoad);
+                if (shutterAction != ShutterAction::UNDEFINED_ACTION) {
                     isValid = true;
-                    moveCoverByStatus(workMode, coverCommand);
                 }
             }
-        } else if (workMode == WorkMode::GLOBAL) {
-            if (strPayLoad.equalsIgnoreCase("announce")) {
-                isValid = true;
-                m_triggerAnnounce = true;
+
+            if (isValid) {
+                if (mqttMode == MqttMode::SHUTTER1) {
+                    m_shutter1.executeAction(shutterAction, position, m_shutter2.isActionInProgress());
+                } else if (mqttMode == MqttMode::SHUTTER2) {
+                    m_shutter2.executeAction(shutterAction, position, m_shutter1.isActionInProgress());
+                }                
             }
+        } else if (mqttMode == MqttMode::GLOBAL) {
+            if (strPayLoad == "announce") {
+                isValid = true;
+                announceMqtt();
+             }
         }
     }
 
     if (!isValid) {
-        Log.warning("MQTT message cannot be processed, most likly incorrect topic [ %s ] or payload [ %s ].", strTopic.c_str(), strPayLoad.c_str());
+        Log.warning("[ %s:%d ] MQTT message cannot be processed, most likly incorrect topic [ %s ] or payload [ %s ].", __FILE__, __LINE__, strTopic.c_str(), strPayLoad.c_str());
     }
+
 }
 
 bool connectToMqtt() {
     bool connected;
     
-    Log.notice("Connecting to MQTT broker [ %s:%d ] with client ID [ %s ].", MQTT_HOST.toString().c_str(), MQTT_PORT, m_clientId.c_str());
+    Log.notice("[ %s:%d ] Connecting to MQTT broker [ %s:%d ] with client ID [ %s ].", __FILE__, __LINE__, MQTT_HOST.toString().c_str(), MQTT_PORT, m_clientId.c_str());
    
-    connected = m_mqttClient.connect(m_clientId.c_str(), MQTT_USER, MQTT_PWD, buildMqttTopic("availability", WorkMode::DEVICE).c_str(), 0, true, "offline", true);
+    connected = m_mqttClient.connect(m_clientId.c_str(), MQTT_USER, MQTT_PWD, buildMqttTopic("availability", MqttMode::DEVICE).c_str(), 0, true, "offline", true);
 
     if (connected) {
-        Log.notice("Successfully connected to MQTT broker [ %s:%d ]", MQTT_HOST.toString().c_str(), MQTT_PORT);
+        Log.notice("[ %s:%d ] Successfully connected to MQTT broker [ %s:%d ]", __FILE__, __LINE__, MQTT_HOST.toString().c_str(), MQTT_PORT);
 
-        // WorkMode::GLOBAL
-        subscribeMqttTopic(buildMqttTopic("command", WorkMode::GLOBAL));
+        subscribeMqttTopic(buildMqttTopic("command", MqttMode::GLOBAL));
 
-        // WorkMode::DEVICE
+        subscribeMqttTopic(buildMqttTopic("set", MqttMode::SHUTTER1));
+        subscribeMqttTopic(buildMqttTopic("set_position", MqttMode::SHUTTER1));
 
-        // WorkMode::COVER_LEFT
-        subscribeMqttTopic(buildMqttTopic("set", WorkMode::COVER_LEFT));
-        subscribeMqttTopic(buildMqttTopic("set_position", WorkMode::COVER_LEFT));
+        subscribeMqttTopic(buildMqttTopic("set", MqttMode::SHUTTER2));
+        subscribeMqttTopic(buildMqttTopic("set_position", MqttMode::SHUTTER2));
 
-        // WorkMode::COVER_RIGHT
-        subscribeMqttTopic(buildMqttTopic("set", WorkMode::COVER_RIGHT));
-        subscribeMqttTopic(buildMqttTopic("set_position", WorkMode::COVER_RIGHT));
-
-        m_triggerAnnounce = true;
+        announceMqtt();
     } else {
-        Log.error("Failed connection to MQTT broker [ %s:%d ] with status [ %d ].", MQTT_HOST.toString().c_str(), MQTT_PORT, m_mqttClient.state());
+        Log.error("[ %s:%d ] Failed connection to MQTT broker [ %s:%d ] with status [ %d ].", __FILE__, __LINE__, MQTT_HOST.toString().c_str(), MQTT_PORT, m_mqttClient.state());
     }
 
     return connected;
@@ -518,11 +251,11 @@ bool checkMqttConnection() {
             isConnected = true;
         } else {
             startBlinkOnboardLed();
-            unsigned long now = millis();
-            if (now - m_lastReconnectAttempt > 2000) {
-                m_lastReconnectAttempt = now;
+            ulong now = millis();
+            if (now - m_mqttLastReconnectAttempt > 2000) {
+                m_mqttLastReconnectAttempt = now;
                 if (connectToMqtt()) {
-                    m_lastReconnectAttempt = 0;
+                    m_mqttLastReconnectAttempt = 0;
                 }
             }
         }
@@ -531,28 +264,55 @@ bool checkMqttConnection() {
     return isConnected;
 }
 
-/*********  WIFI functions  **********/
+void shutterActionInProgress(String id, ShutterAction shutterAction) {
+
+}
+
+void shutterActionComplete(String id, ShutterAction shutterAction, ShutterReason reason) {
+    if (m_shutter1.getID() = id) {
+        sendStatusShutter1Mqtt();
+    } else {
+        sendStatusShutter2Mqtt();
+    }
+}
+
+void setupShutter() {
+    Log.notice("[ %s:%d ] Setup shutter 1.", __FILE__, __LINE__);
+    m_shutter1.setControlPins(D5, D6, D7);
+    m_shutter1.setDurationFullMoveMs(15650);
+    m_shutter1.onActionInProgress(shutterActionInProgress);
+    m_shutter1.onActionComplete(shutterActionComplete);
+
+    Log.notice("[ %s:%d ] Setup shutter 2.", __FILE__, __LINE__);
+    m_shutter2.setControlPins(D1, D2, D3);
+    m_shutter2.setDurationFullMoveMs(15000);
+    m_shutter2.onActionInProgress(shutterActionInProgress);
+    m_shutter2.onActionComplete(shutterActionComplete);
+}
+
 void connectToWifi() {
-    Log.notice("Connecting to SSID [ %s ].", WIFI_SSID);
+    Log.notice("[ %s:%d ] Connecting to SSID [ %s ].", __FILE__, __LINE__, WIFI_SSID);
     startBlinkOnboardLed(true);
     WiFi.begin(WIFI_SSID, WIFI_PASSWORD);   
 }
 
 void onWifiConnected (const WiFiEventStationModeConnected& event) {
-    Log.notice("Connected to SSID [ %s ] on BSSID [ %02X:%02X:%02X:%02X:%02X:%02X ] via channel [ %d ], waiting for IP address.", event.ssid.c_str(), event.bssid[0], event.bssid[1], event.bssid[2], event.bssid[3], event.bssid[4], event.bssid[5], event.channel);
+    char bssid[20] = {0};
+    sprintf(bssid,"%02X:%02X:%02X:%02X:%02X:%02X", event.bssid[0], event.bssid[1], event.bssid[2], event.bssid[3], event.bssid[4], event.bssid[5]);
+    Log.notice("[ %s:%d ] Connected to SSID [ %s ] on BSSID [ %s ] via channel [ %d ], waiting for IP address.", __FILE__, __LINE__, event.ssid.c_str(), bssid, event.channel);
 }
 
 void onWifiDisconnect(const WiFiEventStationModeDisconnected& event) {
-	Log.warning("Disconnected from SSID [ %s ] with reason [ %d ].", event.ssid.c_str(), event.reason);
+	Log.warning("[ %s:%d ] Disconnected from SSID [ %s ] with reason [ %d ].", __FILE__, __LINE__, event.ssid.c_str(), event.reason);
     m_wifiReconnectTimer.once(2, connectToWifi);
 }
 
 void onWifiGotIP(const WiFiEventStationModeGotIP& event) {
-    Log.notice("Received IP [ %s ] / Gateway [ %s ] / Mask [ %s ].", event.ip.toString().c_str(), event.gw.toString().c_str(), event.mask.toString().c_str());
+    Log.notice("[ %s:%d ] Received IP [ %s ] / Gateway [ %s ] / Mask [ %s ].", __FILE__, __LINE__, event.ip.toString().c_str(), event.gw.toString().c_str(), event.mask.toString().c_str());
 	stopBlinkOnboardLed();
 
     if (!MDNS.begin(m_clientId)) {
-        Log.error("Error setting up MDNS responder.");
+        Log.error("[ %s:%d ] Error setting up MDNS responder.", __FILE__, __LINE__);
     }
 }
 
@@ -572,10 +332,9 @@ void setupWifi() {
     connectToWifi();    
 }
 
-/*********  Setup and Loop function  **********/
 void setup() {
     Serial.begin(115200);
-    while(!Serial && !Serial.available()){}
+    while(!Serial && !Serial.available()) {}
     Serial.println("\n");
 
     Log.begin(LOG_LEVEL_VERBOSE, &Serial, true);
@@ -583,26 +342,14 @@ void setup() {
     Log.setSuffix(printNewline);
 
     pinMode(LED_BUILTIN, OUTPUT);
-    digitalWrite(LED_BUILTIN, HIGH); // set to high will turn off internal LED
 
-    // WorkMode::COVER_LEFT
-    pinMode(getPin(WorkMode::COVER_LEFT, CoverCommand::UP), OUTPUT); // up
-    pinMode(getPin(WorkMode::COVER_LEFT, CoverCommand::STOP), OUTPUT); // stop
-    pinMode(getPin(WorkMode::COVER_LEFT, CoverCommand::DOWN), OUTPUT); // down
-    
-    //WorkMode::COVER_RIGHT
-    pinMode(getPin(WorkMode::COVER_RIGHT, CoverCommand::UP), OUTPUT); // up
-    pinMode(getPin(WorkMode::COVER_RIGHT, CoverCommand::STOP), OUTPUT); // stop
-    pinMode(getPin(WorkMode::COVER_RIGHT, CoverCommand::DOWN), OUTPUT); // down
-
-    setupMqtt();
+    setupShutter();
+    setupMqtt();    
     setupWifi();
 }
 
 void loop() {
-    checkButtonPressRequired();
-    
-    if (checkMqttConnection()) {
-        announceMqtt();
-    }
+    checkMqttConnection();
+    m_shutter1.tick();
+    m_shutter2.tick();
 }
