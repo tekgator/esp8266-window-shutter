@@ -15,14 +15,15 @@
 #include "config.h"
 #include "Shutter.hpp"
 
-Shutter shutter1("left");
-Shutter shutter2("right");
+Shutter shutter1("Left");
+Shutter shutter2("Right");
 
 bool shouldSaveConfig = false;
 char mqttServer[40] = "";
 char mqttPort[6] = "1883";
 char mqttUser[40] = "";
 char mqttPassword[40] = "";
+char discoveryPrefix[20] = "homeassistant";
 char shutterDelay[5] = "1500";
 
 WiFiEventHandler wifiConnectHandler;
@@ -116,9 +117,58 @@ void sendStatusShutter2Mqtt() {
     publishMqttTopic(buildMqttTopic("position", MqttMode::SHUTTER2), String(shutter2.getPosition()), true);
 }
 
+String buildDiscoveryJson(Shutter &shutter) {
+    MqttMode mqttMode = (shutter.getID() == shutter1.getID() ? MqttMode::SHUTTER1 : MqttMode::SHUTTER2);
+    DynamicJsonDocument doc(1024);
+    char payload[1024];
+
+    doc["name"] = "Shutter " + shutter.getID();
+    doc["uniq_id"] = clientId + "-shutter-" + shutter.getID(); // unique_id
+    doc["avty_t"] = buildMqttTopic("availability", MqttMode::DEVICE); //availability_topic
+    doc["stat_t"] = buildMqttTopic("state", mqttMode); //state_topic
+    doc["cmd_t"] = buildMqttTopic("set", mqttMode); //command_topic
+    doc["pos_t"] = buildMqttTopic("position", mqttMode); //position_topic
+    doc["set_pos_t"] = buildMqttTopic("set_position", mqttMode); //set_position_topic
+    doc["pl_open"] = "up"; //payload_open
+    doc["pl_cls"] = "down"; //payload_close
+    doc["pl_stop"] = "stop"; //payload_stop
+    doc["stat_open"] = "open"; //state_open
+    doc["stat_clsd"] = "closed"; //state_closed
+    doc["pl_avail"] = "online"; //payload_available
+    doc["pl_not_avail"] = "offline"; //payload_not_available
+    doc["opt"] = "true"; //optimistic
+
+    auto device = doc.createNestedObject("dev"); //device
+    auto ids = device.createNestedArray("ids"); //identifiers
+    ids.add(clientId);
+    device["mf"] = "Wemos"; //manufacturer // TODO: is there a ways to get it from the chip?
+    device["mdl"] = "D1"; //model // TODO: is there a ways to get it from the chip?
+    device["name"] = clientId;
+    device["sw"] = VERSION; //sw_version
+
+    serializeJson(doc, payload, sizeof(payload));
+
+    return String(payload);
+}
+
+void sendDiscovery() {
+    if (discoveryPrefix == NULL || strlen(discoveryPrefix) <= 0) return;
+    
+    String topic;
+    String payload;
+
+    topic = String(discoveryPrefix) + "/" + "cover" + "/" + clientId + "/shutter1/config";
+    payload = buildDiscoveryJson(shutter1);
+    publishMqttTopic(topic, payload, true);
+
+    topic = String(discoveryPrefix) + "/" + "cover" + "/" + clientId + "/shutter2/config";
+    payload = buildDiscoveryJson(shutter2);
+    publishMqttTopic(topic, payload, true);
+}
+
 void announceMqtt() {
+    sendDiscovery();
     publishMqttTopic(buildMqttTopic("availability", MqttMode::DEVICE), "online", true);
-        
     sendStatusShutter1Mqtt();
     sendStatusShutter2Mqtt();
 }
@@ -282,13 +332,14 @@ bool connectToMqtt() {
 
         announceMqtt();
     } else {
-        Log.error("[ %s:%d ] Failed connection to MQTT broker [ %s:%d ] with status [ %d ].", __FILE__, __LINE__, mqttServer, mqttPort, mqttClient.state());
+        Log.error("[ %s:%d ] Failed connection to MQTT broker [ %s:%s ] with status [ %d ].", __FILE__, __LINE__, mqttServer, mqttPort, mqttClient.state());
     }
 
     return connected;
 }
 
 void setupMqtt() {
+    mqttClient.setBufferSize(1024);
     mqttClient.setServer(mqttServer, String(mqttPort).toInt());
     mqttClient.setCallback(mqttCallback);
 }
@@ -421,6 +472,7 @@ void setupWifiManager() {
                     strcpy(mqttPort, json["mqtt_port"]);
                     strcpy(mqttUser, json["mqtt_user"]);
                     strcpy(mqttPassword, json["mqtt_password"]);
+                    strcpy(discoveryPrefix, json["discovery_prefix"]);
                     strcpy(shutterDelay, json["shutter_delay"]);
                 } else {
                     Log.error("[ %s:%d ] Failed to load JSON config file, consider reset", __FILE__, __LINE__);
@@ -450,6 +502,9 @@ void setupWifiManager() {
     WiFiManagerParameter custom_mqtt_password("password", "MQTT password", mqttPassword, sizeof(mqttPassword));
     wifiManager.addParameter(&custom_mqtt_password);
 
+    WiFiManagerParameter custom_discovery_prefix("discovery", "Discovery prefix", discoveryPrefix, sizeof(discoveryPrefix));
+    wifiManager.addParameter(&custom_discovery_prefix);
+
     WiFiManagerParameter custom_shutter_delay("delay", "Shutter delay in MS", shutterDelay, 4);
     wifiManager.addParameter(&custom_shutter_delay);
 
@@ -471,10 +526,12 @@ void setupWifiManager() {
     strcpy(mqttPort, custom_mqtt_port.getValue());
     strcpy(mqttUser, custom_mqtt_user.getValue());
     strcpy(mqttPassword, custom_mqtt_password.getValue());
+    strcpy(discoveryPrefix, custom_discovery_prefix.getValue());
     strcpy(shutterDelay, custom_shutter_delay.getValue());
 
     Log.notice("[ %s:%d ] MQTT broker settings [ %s:%s ]", __FILE__, __LINE__, mqttServer, mqttPort);
     Log.notice("[ %s:%d ] MQTT user [ %s ] and password  [ %s ]", __FILE__, __LINE__, mqttUser, mqttPassword);
+    Log.notice("[ %s:%d ] Auto discovery prefix [ %s ]", __FILE__, __LINE__, discoveryPrefix);
     Log.notice("[ %s:%d ] Shutter delay [ %s ] ms", __FILE__, __LINE__, shutterDelay);
 
     //save the custom parameters to file system
@@ -485,6 +542,7 @@ void setupWifiManager() {
         json["mqtt_port"] = mqttPort;
         json["mqtt_user"] = mqttUser;
         json["mqtt_password"] = mqttPassword;
+        json["discovery_prefix"] = discoveryPrefix;
         json["shutter_delay"] = shutterDelay;
 
         File configFile = LittleFS.open("/config.json", "w");
