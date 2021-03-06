@@ -20,13 +20,13 @@ public:
 
     void setControlPins(uint pinUp, uint pinDown, uint pinStop);
     void setDurationFullMoveMs(uint ms);
+    void setDelayTimeMs(uint ms);
 
     uint getPosition();
-    bool setPosition(uint position, bool fOtherShutterActionInProgress = false);
 
     String getStatus();
 
-    bool executeAction(ShutterAction shutterAction, uint position = 100, bool fOtherShutterActionInProgress = false);
+    bool executeAction(ShutterAction shutterAction, uint position = 100);
 
     bool isActionInProgress();
 
@@ -39,6 +39,7 @@ private:
     uint m_pinDown;
     uint m_pinStop;
 
+    uint m_delayTimeMs;
     uint m_durationFullMoveMs;
     uint m_lastButtonPressMs;
 
@@ -49,6 +50,7 @@ private:
     int roundUp(int numToRound, int multiple);
     void setupPin(uint pin);
     uint getPin(ShutterAction shutterAction);
+    bool setPosition(uint position);    
     uint getNewPosition(ShutterAction shutterAction);
     void resetTask();
     uint getDelayMs(bool fOtherShutterActionInProgress);
