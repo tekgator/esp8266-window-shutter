@@ -9,6 +9,7 @@
 #include <ArduinoJson.h>
 #include <PubSubClient.h>
 #include <Ticker.h>
+#include <CircularBuffer.h>
 
 #include "config.h"
 #include "Shutter.hpp"
@@ -31,6 +32,13 @@ WiFiClient wifiClient;
 
 PubSubClient mqttClient(wifiClient);
 unsigned long mqttLastReconnectAttempt = 0;
+
+typedef struct {
+    String topic;
+    String payLoad;
+} mqttRecord_t;
+
+CircularBuffer<mqttRecord_t, 10> mqttQueue;
 
 enum MqttMode {
     INVALID_MQTT_MODE = -100,
@@ -175,27 +183,25 @@ ShutterAction getShutterActionFromPayload(String payload) {
     return shutterAction;
 }
 
-void mqttCallback(char* topic, byte* payload, unsigned int length) {
-    String strTopic = topic;
-    String strPayLoad = convertPayload(payload, length);
-    MqttMode mqttMode = getMqttModeFromTopic(strTopic);
+void workMqttMessage(mqttRecord_t mqttRec) {
+    MqttMode mqttMode = getMqttModeFromTopic(mqttRec.topic);
     bool isValid = false;
     int position = -1;
     ShutterAction shutterAction = ShutterAction::UNDEFINED_ACTION;
 
-    Log.notice("[ %s:%d ] MQTT message arrived with topic [ %s ] and payload [ %s ].", __FILE__, __LINE__, strTopic.c_str(), strPayLoad.c_str());
+    Log.notice("[ %s:%d ] MQTT message dequeued with topic [ %s ] and payload [ %s ].", __FILE__, __LINE__, mqttRec.topic.c_str(), mqttRec.payLoad.c_str());
 
     if (mqttMode != MqttMode::INVALID_MQTT_MODE) {
         if (mqttMode == MqttMode::SHUTTER1 ||
             mqttMode == MqttMode::SHUTTER2) {
-            if (strTopic.endsWith("set_position")) {
-                position = getPositionFromPayload(strPayLoad);
+            if (mqttRec.topic.endsWith("set_position")) {
+                position = getPositionFromPayload(mqttRec.payLoad);
                 if (position >= 0) {
                     shutterAction = ShutterAction::MOVE_BY_POSITION;
                     isValid = true;
                 }
-            } else if (strTopic.endsWith("set")) {
-                shutterAction = getShutterActionFromPayload(strPayLoad);
+            } else if (mqttRec.topic.endsWith("set")) {
+                shutterAction = getShutterActionFromPayload(mqttRec.payLoad);
                 if (shutterAction != ShutterAction::UNDEFINED_ACTION) {
                     isValid = true;
                 }
@@ -203,13 +209,13 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
 
             if (isValid) {
                 if (mqttMode == MqttMode::SHUTTER1) {
-                    shutter1.executeAction(shutterAction, position, shutter2.isActionInProgress());
+                    shutter1.executeAction(shutterAction, position);
                 } else if (mqttMode == MqttMode::SHUTTER2) {
-                    shutter2.executeAction(shutterAction, position, shutter1.isActionInProgress());
+                    shutter2.executeAction(shutterAction, position);
                 }                
             }
         } else if (mqttMode == MqttMode::GLOBAL) {
-            if (strPayLoad == "announce") {
+            if (mqttRec.payLoad == "announce") {
                 isValid = true;
                 announceMqtt();
              }
@@ -217,9 +223,27 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
     }
 
     if (!isValid) {
-        Log.warning("[ %s:%d ] MQTT message cannot be processed, most likly incorrect topic [ %s ] or payload [ %s ].", __FILE__, __LINE__, strTopic.c_str(), strPayLoad.c_str());
+        Log.warning("[ %s:%d ] MQTT message cannot be processed, most likly incorrect topic [ %s ] or payload [ %s ].", __FILE__, __LINE__, mqttRec.topic.c_str(), mqttRec.payLoad.c_str());
     }
+}
 
+void workProcessQueue() {
+    mqttRecord_t mqttRec;
+    
+    while (!mqttQueue.isEmpty()) {
+        if (shutter1.isActionInProgress() || shutter2.isActionInProgress()) {
+            Log.notice("[ %s:%d ] MQTT message found in queue, but shutter action is still in progress. Wait for next cycle, available queue slots [ %d ]", __FILE__, __LINE__, mqttQueue.available());
+        }
+
+        workMqttMessage(mqttQueue.shift());
+    }
+}
+
+void mqttCallback(char* topic, byte* payload, unsigned int length) {
+    String strPayLoad = convertPayload(payload, length);
+
+    Log.notice("[ %s:%d ] MQTT message arrived and enqueued with topic [ %s ] and payload [ %s ].", __FILE__, __LINE__, topic, strPayLoad.c_str());
+    mqttQueue.push(mqttRecord_t{String(topic), strPayLoad});
 }
 
 bool connectToMqtt() {
@@ -502,4 +526,5 @@ void loop() {
     checkMqttConnection();
     shutter1.tick();
     shutter2.tick();
+    workProcessQueue();
 }

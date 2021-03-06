@@ -110,61 +110,44 @@ uint Shutter::getPosition() {
     return m_position;
 }
 
-uint Shutter::getDelayMs(bool fOtherShutterActionInProgress) {
-    uint delayMs = 0;
-    if (fOtherShutterActionInProgress) {
-        delayMs = m_delayTimeMs;
-    }
-    return delayMs;
-}
-
-bool Shutter::setPosition(uint position, bool fOtherShutterActionInProgress) {
+bool Shutter::setPosition(uint position) {
     bool success = true;
 
-    if (isActionInProgress()) {
-        Log.warning("[ %s:%d ] [ %s ] Device currently busy with other task, cannot set new position [ %d ].", __FILE__, __LINE__, m_id.c_str(), position);
-        
-        success = false;
-        for (auto callback : m_onActionCompleteUserCallbacks) {
-            callback(m_id, ShutterAction::MOVE_BY_POSITION, ShutterReason::DEVICE_BUSY);
-        }
+    int diffMovePercenct;
+    uint newPositionPercent;
+    ShutterAction shutterAction;
+    
+    position = min((int) position, 100);
+    diffMovePercenct = m_position - position;
+
+    if (diffMovePercenct > 0) {
+        shutterAction = ShutterAction::DOWN;
+        newPositionPercent = m_position - roundUp(diffMovePercenct, 10);
+        diffMovePercenct = m_position - newPositionPercent;
+    } else if (diffMovePercenct < 0) {
+        shutterAction = ShutterAction::UP;
+        newPositionPercent = m_position + roundUp(abs(diffMovePercenct), 10);
+        diffMovePercenct = newPositionPercent - m_position;
     } else {
-        int diffMovePercenct;
-        uint newPositionPercent;
-        ShutterAction shutterAction;
-        
-        position = min((int) position, 100);
-        diffMovePercenct = m_position - position;
-
-        if (diffMovePercenct > 0) {
-            shutterAction = ShutterAction::DOWN;
-            newPositionPercent = m_position - roundUp(diffMovePercenct, 10);
-            diffMovePercenct = m_position - newPositionPercent;
-        } else if (diffMovePercenct < 0) {
-            shutterAction = ShutterAction::UP;
-            newPositionPercent = m_position + roundUp(abs(diffMovePercenct), 10);
-            diffMovePercenct = newPositionPercent - m_position;
-        } else {
-            // no difference detected, leave everything as is
-            for (auto callback : m_onActionCompleteUserCallbacks) {
-                callback(m_id, ShutterAction::MOVE_BY_POSITION, ShutterReason::SUCCESS);
-            }
-            return success;
+        // no difference detected, leave everything as is
+        for (auto callback : m_onActionCompleteUserCallbacks) {
+            callback(m_id, ShutterAction::MOVE_BY_POSITION, ShutterReason::SUCCESS);
         }
-
-        if (newPositionPercent <= 0 || newPositionPercent >= 100) {
-            // full move (to the end) without stop, use executeAction function
-            return executeAction(shutterAction);
-        }
-
-        resetTask();
-        m_task.executionTimeMillis = millis() + getDelayMs(fOtherShutterActionInProgress);
-        m_task.newPosition = newPositionPercent;
-        m_task.shutterAction = shutterAction;
-        m_task.stopRequiredAfterMillis = (abs(diffMovePercenct) * m_durationFullMoveMs) / 100;
-
-        Log.notice("[ %s:%d ] [ %s ] Calculation for new position completed. Action [ %d ], Old pos [ %d ], new pos [ %d ], diff [ %d ], time to move [ %dms ].", __FILE__, __LINE__, m_id.c_str(), m_task.shutterAction, m_position, m_task.newPosition, diffMovePercenct, m_task.stopRequiredAfterMillis);        
+        return success;
     }
+
+    if (newPositionPercent <= 0 || newPositionPercent >= 100) {
+        // full move (to the end) without stop, use executeAction function
+        return executeAction(shutterAction);
+    }
+
+    resetTask();
+    m_task.executionTimeMillis = millis();
+    m_task.newPosition = newPositionPercent;
+    m_task.shutterAction = shutterAction;
+    m_task.stopRequiredAfterMillis = (abs(diffMovePercenct) * m_durationFullMoveMs) / 100;
+
+    Log.notice("[ %s:%d ] [ %s ] Calculation for new position completed. Action [ %d ], Old pos [ %d ], new pos [ %d ], diff [ %d ], time to move [ %dms ].", __FILE__, __LINE__, m_id.c_str(), m_task.shutterAction, m_position, m_task.newPosition, diffMovePercenct, m_task.stopRequiredAfterMillis);        
 
     return success;
 }
@@ -178,7 +161,7 @@ bool Shutter::isActionInProgress() {
            (millis() - m_lastButtonPressMs < m_delayTimeMs);
 }
 
-bool Shutter::executeAction(ShutterAction shutterAction, uint position, bool fOtherShutterActionInProgress) {
+bool Shutter::executeAction(ShutterAction shutterAction, uint position) {
     bool success = true;
 
     if (isActionInProgress()) {
@@ -190,10 +173,10 @@ bool Shutter::executeAction(ShutterAction shutterAction, uint position, bool fOt
         }
     } else {
         if (shutterAction == ShutterAction::MOVE_BY_POSITION) {
-            setPosition(position, fOtherShutterActionInProgress);
+            setPosition(position);
         } else {
             resetTask();
-            m_task.executionTimeMillis = millis() + getDelayMs(fOtherShutterActionInProgress);
+            m_task.executionTimeMillis = millis();
             m_task.shutterAction = shutterAction;
             m_task.newPosition = getNewPosition(m_task.shutterAction);
             

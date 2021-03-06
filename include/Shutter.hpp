@@ -23,11 +23,10 @@ public:
     void setDelayTimeMs(uint ms);
 
     uint getPosition();
-    bool setPosition(uint position, bool fOtherShutterActionInProgress = false);
 
     String getStatus();
 
-    bool executeAction(ShutterAction shutterAction, uint position = 100, bool fOtherShutterActionInProgress = false);
+    bool executeAction(ShutterAction shutterAction, uint position = 100);
 
     bool isActionInProgress();
 
@@ -51,6 +50,7 @@ private:
     int roundUp(int numToRound, int multiple);
     void setupPin(uint pin);
     uint getPin(ShutterAction shutterAction);
+    bool setPosition(uint position);    
     uint getNewPosition(ShutterAction shutterAction);
     void resetTask();
     uint getDelayMs(bool fOtherShutterActionInProgress);
