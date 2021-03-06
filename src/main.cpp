@@ -11,6 +11,7 @@
 #include <Ticker.h>
 #include <CircularBuffer.h>
 
+#include "Version.h"
 #include "config.h"
 #include "Shutter.hpp"
 
@@ -515,6 +516,9 @@ void setup() {
     Log.setSuffix(printNewline);
 
     pinMode(LED_BUILTIN, OUTPUT);
+
+    Log.notice("[ %s:%d ] Project version: %s", __FILE__, __LINE__, String(VERSION).c_str());
+    Log.notice("[ %s:%d ] Build timestamp: %s", __FILE__, __LINE__, String(BUILD_TIMESTAMP).c_str());
 
     setupWifiManager();
     setupShutter();
