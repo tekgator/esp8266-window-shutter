@@ -40,6 +40,7 @@ typedef struct {
 } mqttRecord_t;
 
 CircularBuffer<mqttRecord_t, 10> mqttQueue;
+bool suppressQueueLogMessage = false;
 
 enum MqttMode {
     INVALID_MQTT_MODE = -100,
@@ -102,17 +103,17 @@ void subscribeMqttTopic(String topic) {
 
 void publishMqttTopic(String topic, String payload, bool retain = false) {
     Log.notice("[ %s:%d ] Publish MQTT topic [ %s ] with payload [ %s ] and retain [ %s ].", __FILE__, __LINE__, topic.c_str(), payload.c_str(), retain ? "true" : "false");
-    mqttClient.publish(topic.c_str(), payload.c_str());
+    mqttClient.publish(topic.c_str(), payload.c_str(), retain);
 }
 
 void sendStatusShutter1Mqtt() {
-    publishMqttTopic(buildMqttTopic("state", MqttMode::SHUTTER1), shutter1.getStatus());
-    publishMqttTopic(buildMqttTopic("position", MqttMode::SHUTTER1), String(shutter1.getPosition()));
+    publishMqttTopic(buildMqttTopic("state", MqttMode::SHUTTER1), shutter1.getStatus(), true);
+    publishMqttTopic(buildMqttTopic("position", MqttMode::SHUTTER1), String(shutter1.getPosition()), true);
 }
 
 void sendStatusShutter2Mqtt() {
-    publishMqttTopic(buildMqttTopic("state", MqttMode::SHUTTER2), shutter2.getStatus());
-    publishMqttTopic(buildMqttTopic("position", MqttMode::SHUTTER2), String(shutter2.getPosition()));
+    publishMqttTopic(buildMqttTopic("state", MqttMode::SHUTTER2), shutter2.getStatus(), true);
+    publishMqttTopic(buildMqttTopic("position", MqttMode::SHUTTER2), String(shutter2.getPosition()), true);
 }
 
 void announceMqtt() {
@@ -233,9 +234,13 @@ void workProcessQueue() {
     
     while (!mqttQueue.isEmpty()) {
         if (shutter1.isActionInProgress() || shutter2.isActionInProgress()) {
-            Log.notice("[ %s:%d ] MQTT message found in queue, but shutter action is still in progress. Wait for next cycle, available queue slots [ %d ]", __FILE__, __LINE__, mqttQueue.available());
+            if (!suppressQueueLogMessage) {
+                Log.notice("[ %s:%d ] MQTT message found in queue, but shutter action is still in progress. Wait for next cycle, available queue slots [ %d ]", __FILE__, __LINE__, mqttQueue.available());
+            }
+            suppressQueueLogMessage = true;
+            break;
         }
-
+        suppressQueueLogMessage = false;
         workMqttMessage(mqttQueue.shift());
     }
 }
@@ -267,7 +272,7 @@ bool connectToMqtt() {
     if (connected) {
         Log.notice("[ %s:%d ] Successfully connected to MQTT broker [ %s:%d ]", __FILE__, __LINE__, mqttServer, mqttPort);
 
-        subscribeMqttTopic(buildMqttTopic("command", MqttMode::GLOBAL));
+        subscribeMqttTopic(buildMqttTopic("cmd", MqttMode::GLOBAL));
 
         subscribeMqttTopic(buildMqttTopic("set", MqttMode::SHUTTER1));
         subscribeMqttTopic(buildMqttTopic("set_position", MqttMode::SHUTTER1));
@@ -388,16 +393,16 @@ void setupWifiManager() {
     WiFi.setAutoReconnect(true);    
 
     //read configuration from FS json
-    Log.trace("[ %s:%d ] Mounting file system", __FILE__, __LINE__);
+    Log.notice("[ %s:%d ] Mounting file system", __FILE__, __LINE__);
 
     if (LittleFS.begin()) {
         Log.notice("[ %s:%d ] Successfully mounted file system", __FILE__, __LINE__);
         if (LittleFS.exists("/config.json")) {
             //file exists, reading and loading
-            Log.trace("[ %s:%d ] Reading JSON config file", __FILE__, __LINE__);
+            Log.notice("[ %s:%d ] Reading JSON config file", __FILE__, __LINE__);
             File configFile = LittleFS.open("/config.json", "r");
             if (configFile) {
-                Log.trace("[ %s:%d ] Successfully opened JSON config file", __FILE__, __LINE__);
+                Log.notice("[ %s:%d ] Successfully opened JSON config file", __FILE__, __LINE__);
                 size_t size = configFile.size();
                 // Allocate a buffer to store contents of the file.
                 std::unique_ptr<char[]> buf(new char[size]);
@@ -409,8 +414,8 @@ void setupWifiManager() {
                 
                 if ( ! deserializeError ) {
                     serializeJson(json, charBuffer, sizeof(charBuffer));
-                    Log.trace("[ %s:%d ] Parsed JSON", __FILE__, __LINE__);
-                    Log.trace("[ %s:%d ] %s", __FILE__, __LINE__, charBuffer);
+                    Log.notice("[ %s:%d ] Parsed JSON", __FILE__, __LINE__);
+                    Log.notice("[ %s:%d ] %s", __FILE__, __LINE__, charBuffer);
                     
                     strcpy(mqttServer, json["mqtt_server"]);
                     strcpy(mqttPort, json["mqtt_port"]);
