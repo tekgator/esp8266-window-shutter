@@ -302,12 +302,14 @@ void setupShutter() {
     Log.notice("[ %s:%d ] Setup shutter 1", __FILE__, __LINE__);
     shutter1.setControlPins(D5, D6, D7);
     shutter1.setDurationFullMoveMs(15650);
+    shutter1.setDelayTimeMs(String(shutterDelay).toInt());
     shutter1.onActionInProgress(shutterActionInProgress);
     shutter1.onActionComplete(shutterActionComplete);
 
     Log.notice("[ %s:%d ] Setup shutter 2", __FILE__, __LINE__);
     shutter2.setControlPins(D1, D2, D3);
     shutter2.setDurationFullMoveMs(15000);
+    shutter2.setDelayTimeMs(String(shutterDelay).toInt());
     shutter2.onActionInProgress(shutterActionInProgress);
     shutter2.onActionComplete(shutterActionComplete);
 }

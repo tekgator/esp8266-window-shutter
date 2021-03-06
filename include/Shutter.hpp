@@ -20,6 +20,7 @@ public:
 
     void setControlPins(uint pinUp, uint pinDown, uint pinStop);
     void setDurationFullMoveMs(uint ms);
+    void setDelayTimeMs(uint ms);
 
     uint getPosition();
     bool setPosition(uint position, bool fOtherShutterActionInProgress = false);
@@ -39,6 +40,7 @@ private:
     uint m_pinDown;
     uint m_pinStop;
 
+    uint m_delayTimeMs;
     uint m_durationFullMoveMs;
     uint m_lastButtonPressMs;
 

@@ -1,8 +1,6 @@
 #include <ArduinoLog.h>
 #include "Shutter.hpp"
 
-#define DELAY_TIMEMS_NEXTACTION 1500
-
 Shutter::Shutter(String id) : 
     m_pinUp(0),
     m_pinDown(0),
@@ -50,6 +48,11 @@ void Shutter::setControlPins(uint pinUp, uint pinDown, uint pinStop) {
 void Shutter::setDurationFullMoveMs(uint ms) {
     m_durationFullMoveMs = ms;
     Log.notice("[ %s:%d ] [ %s ] Received duration for full shutter move [ %dms ].", __FILE__, __LINE__, m_id.c_str(), m_durationFullMoveMs);
+}
+
+void Shutter::setDelayTimeMs(uint ms) {
+    m_delayTimeMs = ms;
+    Log.notice("[ %s:%d ] [ %s ] Received delay time required before next action can be executed [ %dms ].", __FILE__, __LINE__, m_id.c_str(), m_delayTimeMs);
 }
 
 uint Shutter::getPin(ShutterAction shutterAction) {
@@ -110,7 +113,7 @@ uint Shutter::getPosition() {
 uint Shutter::getDelayMs(bool fOtherShutterActionInProgress) {
     uint delayMs = 0;
     if (fOtherShutterActionInProgress) {
-        delayMs = DELAY_TIMEMS_NEXTACTION;
+        delayMs = m_delayTimeMs;
     }
     return delayMs;
 }
@@ -172,7 +175,7 @@ String Shutter::getStatus() {
 
 bool Shutter::isActionInProgress() {
     return (m_task.executionTimeMillis > 0) || 
-           (millis() - m_lastButtonPressMs < DELAY_TIMEMS_NEXTACTION);
+           (millis() - m_lastButtonPressMs < m_delayTimeMs);
 }
 
 bool Shutter::executeAction(ShutterAction shutterAction, uint position, bool fOtherShutterActionInProgress) {
