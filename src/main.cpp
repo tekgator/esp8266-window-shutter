@@ -91,8 +91,8 @@ void subscribeMqttTopic(String topic) {
     mqttClient.subscribe(topic.c_str());
 }
 
-void publishMqttTopic(String topic, String payload) {
-    Log.notice("[ %s:%d ] Publish MQTT topic [ %s ] with payload [ %s ].", __FILE__, __LINE__, topic.c_str(), payload.c_str());
+void publishMqttTopic(String topic, String payload, bool retain = false) {
+    Log.notice("[ %s:%d ] Publish MQTT topic [ %s ] with payload [ %s ] and retain [ %s ].", __FILE__, __LINE__, topic.c_str(), payload.c_str(), retain ? "true" : "false");
     mqttClient.publish(topic.c_str(), payload.c_str());
 }
 
@@ -107,7 +107,7 @@ void sendStatusShutter2Mqtt() {
 }
 
 void announceMqtt() {
-    publishMqttTopic(buildMqttTopic("availability", MqttMode::DEVICE), "online");
+    publishMqttTopic(buildMqttTopic("availability", MqttMode::DEVICE), "online", true);
         
     sendStatusShutter1Mqtt();
     sendStatusShutter2Mqtt();
